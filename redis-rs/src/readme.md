@@ -1,0 +1,2 @@
+- [doc:](https://docs.rs/redis/latest/redis/) https://docs.rs/redis/latest/redis/
+- [github:](https://github.com/redis-rs/redis-rs) https://github.com/redis-rs/redis-rs
