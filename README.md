@@ -8,3 +8,4 @@ rust weekly lib
 - [thiserror](thiserror)
 - [sqlx](sqlx)
 - [redis-rs](redis-rs)
+- [serde](serde-rs)
