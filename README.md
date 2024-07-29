@@ -9,3 +9,4 @@ rust weekly lib
 - [sqlx](sqlx)
 - [redis-rs](redis-rs)
 - [serde](serde-rs)
+- [jwt](jwt)
