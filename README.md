@@ -10,3 +10,4 @@ rust weekly lib
 - [redis-rs](redis-rs)
 - [serde](serde-rs)
 - [jwt](jwt)
+- [etcd](etcd)
