@@ -1,0 +1,51 @@
+name: Security example compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'jwt/**'
+      - 'sqlx/sqlx-example/**'
+      - '.github/workflows/security-examples.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: example-test-only
+          MYSQL_DATABASE: rust_weekly
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pexample-test-only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: mysql://root:example-test-only@127.0.0.1:3306/rust_weekly
+      MYSQL_PWD: example-test-only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select stable Rust
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: Prepare example schema
+        run: mysql -h 127.0.0.1 -u root rust_weekly < sqlx/sqlx-example/migrations/20231203144853_test.sql
+      - name: Check and test JWT
+        run: |
+          cargo check --manifest-path jwt/Cargo.toml
+          cargo test --manifest-path jwt/Cargo.toml --locked
+      - name: Check and test SQLx with compile-time schema validation
+        run: |
+          cargo check --manifest-path sqlx/sqlx-example/Cargo.toml
+          cargo test --manifest-path sqlx/sqlx-example/Cargo.toml --locked
+      - name: Run INSERT and verify the stored row
+        run: |
+          cargo run --manifest-path sqlx/sqlx-example/Cargo.toml --locked
+          count=$(mysql -h 127.0.0.1 -u root -N -B rust_weekly -e "SELECT COUNT(*) FROM rust WHERE id = 1 AND name = 'halo'")
+          test "$count" = 1
