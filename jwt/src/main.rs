@@ -103,3 +103,131 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn signed(claims: &Value, secret: &[u8]) -> String {
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    }
+
+    fn future_exp() -> i64 {
+        Utc::now().timestamp() + 3600
+    }
+
+    #[test]
+    fn accepts_valid_token_and_rejects_invalid_tokens() {
+        let claims = json!({"sub": "admin", "exp": future_exp()});
+        assert_eq!(
+            verify_token(&signed(&claims, b"secret")).unwrap().sub,
+            "admin"
+        );
+        assert!(verify_token(&signed(&claims, b"wrong-secret")).is_err());
+        assert!(verify_token("not-a-jwt").is_err());
+        assert!(matches!(
+            verify_token(&signed(
+                &json!({"sub": "admin", "exp": Utc::now().timestamp() - 3600}),
+                b"secret"
+            )),
+            Err(AuthError::TokenExpired)
+        ));
+        for claims in [
+            json!({"sub": "admin"}),
+            json!({"sub": "admin", "exp": "99999999999"}),
+            json!({"sub": "admin", "exp": {"value": future_exp()}}),
+        ] {
+            assert!(verify_token(&signed(&claims, b"secret")).is_err());
+        }
+    }
+
+    // CVE-2026-25537: enabled validation must reject a malformed optional claim.
+    // Decode into Value so Claims' strict deserializer cannot mask the library bug.
+    #[test]
+    fn rejects_malformed_optional_time_claims() {
+        for claim in ["nbf", "exp"] {
+            let mut validation = Validation::new(Algorithm::HS256);
+            validation.validate_nbf = true;
+            validation.required_spec_claims.clear();
+
+            let decode_value = |claims: &Value| {
+                decode::<Value>(
+                    signed(claims, b"secret"),
+                    &DecodingKey::from_secret(b"secret"),
+                    &validation,
+                )
+            };
+            assert!(decode_value(&json!({"sub": "admin"})).is_ok());
+            assert!(decode_value(&json!({
+                "sub": "admin", "exp": future_exp(), "nbf": Utc::now().timestamp() - 60
+            }))
+            .is_ok());
+
+            for malformed in [json!("99999999999"), json!({"value": 123}), json!([123])] {
+                let mut claims = json!({"sub": "admin", "exp": future_exp()});
+                claims[claim] = malformed;
+                assert!(decode_value(&claims).is_err(), "accepted malformed {claim}");
+            }
+        }
+    }
+
+    #[actix_web::test]
+    async fn login_and_bearer_middleware_round_trip() {
+        use actix_web::{http::StatusCode, test};
+
+        let app = test::init_service(
+            App::new().route("/login", web::post().to(login)).service(
+                web::scope("/protected")
+                    .wrap(HttpAuthentication::bearer(validator))
+                    .route("", web::get().to(protected)),
+            ),
+        )
+        .await;
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .set_json(json!({"username": "admin", "password": "password"}))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = test::read_body_json(response).await;
+        let token = body["token"].as_str().unwrap();
+        let request = test::TestRequest::get()
+            .uri("/protected")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::OK
+        );
+
+        let request = test::TestRequest::get().uri("/protected").to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let bad_token = signed(&json!({"sub": "admin", "exp": future_exp()}), b"wrong");
+        let request = test::TestRequest::get()
+            .uri("/protected")
+            .insert_header(("Authorization", format!("Bearer {bad_token}")))
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .set_json(json!({"username": "admin", "password": "wrong"}))
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
